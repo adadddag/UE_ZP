@@ -577,6 +577,7 @@
             .grid { gap: 1rem; grid-template-columns: 1fr; }
         }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 <canvas id="particleCanvas"></canvas>
@@ -2575,13 +2576,19 @@
         resetToExamples();
     }
 
-    // ========== 导出作品集数据为 JSON ==========
+    // ========== 导出作品集数据（媒体文件分离方案） ==========
     async function exportPortfolioData() {
         try {
+            if (typeof JSZip === 'undefined') {
+                showToast('导出库加载失败，请检查网络', 'error');
+                return null;
+            }
+
+            const zip = new JSZip();
             const exportItems = [];
-            let skippedBlobCount = 0;
-            let exportedBlobCount = 0;
-            let totalBlobSize = 0;
+            const MEDIA_DIR = 'media';
+            let smallCount = 0;
+            let zippedCount = 0;
 
             for (const item of portfolioItems) {
                 const exportItem = {
@@ -2598,60 +2605,36 @@
                     isExample: false
                 };
 
-                const hasBlob = (item.localBlob && item._fileBlob) ||
-                    (item.mediaSrc && item.mediaSrc.startsWith('blob:'));
-                const blobSize = (item._fileBlob ? item._fileBlob.size : 0) || 0;
-
-                if (hasBlob) {
-                    totalBlobSize += blobSize;
-                    if (totalBlobSize > 10 * 1024 * 1024) {
-                        skippedBlobCount++;
-                        exportItem.mediaSrc = '';
-                        exportItem._skippedBlob = true;
-                    } else {
-                        try {
-                            let blob = null;
-                            if (item._fileBlob) {
-                                blob = item._fileBlob;
-                            } else if (item.mediaSrc && item.mediaSrc.startsWith('blob:')) {
-                                const resp = await fetch(item.mediaSrc);
-                                blob = await resp.blob();
-                            }
-                            if (blob) {
-                                const reader = new FileReader();
-                                const base64 = await new Promise((resolve, reject) => {
-                                    reader.onload = () => resolve(reader.result);
-                                    reader.onerror = reject;
-                                    reader.readAsDataURL(blob);
-                                });
-                                exportItem.mediaSrc = base64;
-                                exportItem._isBase64 = true;
-                                exportedBlobCount++;
-                            } else {
-                                exportItem.mediaSrc = '';
-                            }
-                        } catch {
-                            skippedBlobCount++;
-                            exportItem.mediaSrc = '';
-                        }
+                const blob = item._fileBlob || (() => {
+                    if (item.mediaSrc && item.mediaSrc.startsWith('blob:')) {
+                        return fetch(item.mediaSrc).then(r => r.blob());
                     }
+                    return null;
+                })();
+
+                if (blob) {
+                    const b = await blob;
+                    const ext = getExtFromMime(b.type) || getExtFromFilename(item.id) || 'bin';
+                    const fileName = `${item.id}.${ext}`;
+                    const zipPath = `${MEDIA_DIR}/${fileName}`;
+
+                    zip.file(fileName, b);
+                    exportItem.mediaSrc = zipPath;
+                    exportItem._useZipPath = true;
+                    exportItem._mediaFile = fileName;
+                    zippedCount++;
                 } else {
                     exportItem.mediaSrc = item.mediaSrc || '';
+                    smallCount++;
                 }
 
                 if (item._posterBlob) {
-                    try {
-                        const reader = new FileReader();
-                        const base64 = await new Promise((resolve, reject) => {
-                            reader.onload = () => resolve(reader.result);
-                            reader.onerror = reject;
-                            reader.readAsDataURL(item._posterBlob);
-                        });
-                        exportItem.posterSrc = base64;
-                    } catch {
-                        exportItem.posterSrc = '';
-                    }
-                } else if (item.posterSrc) {
+                    const ext = getExtFromMime(item._posterBlob.type) || 'jpg';
+                    const posterName = `${item.id}_poster.${ext}`;
+                    zip.file(posterName, item._posterBlob);
+                    exportItem.posterSrc = `${MEDIA_DIR}/${posterName}`;
+                    exportItem._posterFile = posterName;
+                } else if (item.posterSrc && !item.posterSrc.startsWith('blob:')) {
                     exportItem.posterSrc = item.posterSrc;
                 }
 
@@ -2659,30 +2642,34 @@
             }
 
             const exportData = {
-                version: 1,
+                version: 2,
                 exportedAt: new Date().toISOString(),
                 items: exportItems,
-                staticConfig: staticConfig || null
+                staticConfig: staticConfig || null,
+                mediaDir: MEDIA_DIR
             };
 
             const jsonStr = JSON.stringify(exportData, null, 2);
-            const blob = new Blob([jsonStr], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
+            zip.file('portfolio-data.json', jsonStr);
+
+            const content = await zip.generateAsync({
+                type: 'blob',
+                compression: 'DEFLATE'
+            }, (metadata) => {
+                console.log('[exportPortfolioData] 压缩进度:', Math.round(metadata.percent) + '%');
+            });
+
+            const url = URL.createObjectURL(content);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'portfolio-data.json';
+            a.download = 'portfolio-deploy.zip';
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
-            let msg = `已导出 ${exportItems.length} 个作品`;
-            if (skippedBlobCount > 0) {
-                msg += `（${exportedBlobCount}个含图片/视频，${skippedBlobCount}个因文件过大仅保留文字信息）`;
-            } else {
-                msg += `，含图片/视频`;
-            }
-            console.log('[exportPortfolioData]', msg, '数据大小:', jsonStr.length, '字节');
+            const msg = `已导出 ${exportItems.length} 个作品（${zippedCount}个含媒体文件）`;
+            console.log('[exportPortfolioData]', msg);
             showToast(msg, 'success');
             return exportData;
         } catch (e) {
@@ -2690,6 +2677,21 @@
             showToast('导出失败: ' + e.message, 'error');
             return null;
         }
+    }
+
+    function getExtFromMime(mime) {
+        const map = {
+            'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif',
+            'image/webp': 'webp', 'image/bmp': 'bmp', 'image/svg+xml': 'svg',
+            'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
+            'video/x-msvideo': 'avi', 'audio/mpeg': 'mp3', 'application/pdf': 'pdf'
+        };
+        return map[mime] || '';
+    }
+
+    function getExtFromFilename(name) {
+        const idx = name.lastIndexOf('.');
+        return idx >= 0 ? name.substring(idx + 1) : '';
     }
 
     // ========== 从 JSON 文件加载作品集数据（部署时回退方案） ==========
@@ -2702,7 +2704,12 @@
 
             const items = data.items.map(item => {
                 const restored = { ...item };
-                if (restored._isBase64 && restored.mediaSrc && restored.mediaSrc.startsWith('data:')) {
+                delete restored._useZipPath;
+                delete restored._mediaFile;
+                delete restored._posterFile;
+                delete restored._skippedBlob;
+
+                if (restored.mediaSrc && restored.mediaSrc.startsWith('data:')) {
                     try {
                         const byteChars = atob(restored.mediaSrc.split(',')[1]);
                         const byteNumbers = new Array(byteChars.length);
@@ -2712,17 +2719,18 @@
                         const byteArray = new Uint8Array(byteNumbers);
                         const mimeType = restored.mediaSrc.split(';')[0].split(':')[1];
                         const blob = new Blob([byteArray], { type: mimeType });
-                        const blobUrl = URL.createObjectURL(blob);
-                        restored.mediaSrc = blobUrl;
+                        restored.mediaSrc = URL.createObjectURL(blob);
                         restored.localBlob = true;
                         restored._fileBlob = blob;
                     } catch {
                         restored.localBlob = false;
                     }
-                    delete restored._isBase64;
-                } else {
+                } else if (restored.mediaSrc && (restored.mediaSrc.startsWith('media/') || restored.mediaSrc.startsWith('./media/'))) {
+                    restored.localBlob = false;
+                } else if (restored.mediaSrc) {
                     restored.localBlob = false;
                 }
+
                 if (restored.posterSrc && restored.posterSrc.startsWith('data:')) {
                     try {
                         const byteChars = atob(restored.posterSrc.split(',')[1]);
@@ -2737,6 +2745,7 @@
                         restored._posterBlob = blob;
                     } catch {}
                 }
+
                 return restored;
             });
 
