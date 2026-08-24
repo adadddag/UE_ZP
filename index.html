@@ -1934,12 +1934,13 @@
 
         grid.innerHTML = filtered.map((item, idx) => {
             const posterUrl = item.posterSrc || 'https://placehold.co/600x400/152238/white?text=Unreal+Video';
-            const mediaHtml = item.type === 'image'
-                ? `<img src="${item.mediaSrc}" alt="${escapeHtml(item.title)}" loading="lazy" onerror="this.src='https://placehold.co/600x400/1a2a44/white?text=UE+Preview'">`
+            const isVideo = item.type === 'video';
+            const mediaHtml = !isVideo
+                ? `<img src="${item.mediaSrc}" alt="${escapeHtml(item.title)}" loading="lazy" decoding="async" onerror="this.src='https://placehold.co/600x400/1a2a44/white?text=UE+Preview'">`
                 : `<div class="video-lazy" data-src="${item.mediaSrc}" data-poster="${posterUrl}" data-id="${item.id}">
-                        <img src="${posterUrl}" alt="${escapeHtml(item.title)}" loading="lazy">
+                        <img src="${posterUrl}" alt="${escapeHtml(item.title)}" loading="lazy" decoding="async">
                         <div class="video-play-btn" data-src="${item.mediaSrc}"><span class="play-icon">▶</span></div>
-                        <span class="video-label">🎬 视频</span>
+                        <span class="video-label">🎬 点击播放视频</span>
                    </div>`;
             const catLabel = getCategoryLabel(item.category);
             return `
