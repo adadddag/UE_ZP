@@ -7,15 +7,21 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>UE开发者作品集 | 虚幻引擎 · 创意无限</title>
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="preconnect" href="https://placehold.co" crossorigin>
+    <link rel="dns-prefetch" href="raw.githubusercontent.com">
+    <link rel="dns-prefetch" href="adadddag.github.io">
     <!-- PDF库 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" defer></script>
     <script>
         // 配置PDF.js worker
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     </script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
     <!-- OCR库 -->
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -221,6 +227,36 @@
         .media-container img, .media-container video {
             width: 100%; height: 100%; object-fit: cover; display: block;
         }
+        .video-lazy {
+            width: 100%; height: 100%; position: relative; cursor: pointer;
+        }
+        .video-lazy img {
+            width: 100%; height: 100%; object-fit: cover; display: block;
+        }
+        .video-play-btn {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60px; height: 60px; border-radius: 50%;
+            background: rgba(0, 0, 0, 0.55);
+            display: flex; justify-content: center; align-items: center;
+            transition: transform 0.2s, background 0.2s;
+            pointer-events: none;
+        }
+        .video-lazy:hover .video-play-btn {
+            background: rgba(0, 0, 0, 0.75);
+            transform: translate(-50%, -50%) scale(1.1);
+        }
+        .play-icon {
+            color: white; font-size: 1.3rem; margin-left: 3px;
+        }
+        .video-label {
+            position: absolute; bottom: 10px; left: 10px;
+            background: rgba(0,0,0,0.6); color: #fff;
+            font-size: 0.7rem; padding: 3px 10px;
+            border-radius: 12px;
+        }
+        .video-loaded .video-play-btn,
+        .video-loaded .video-label { display: none; }
         .card-content { padding: 1.2rem; flex: 1; }
         .card-title {
             font-size: 1.2rem; font-weight: 700; margin-bottom: 0.4rem;
@@ -577,7 +613,6 @@
             .grid { gap: 1rem; grid-template-columns: 1fr; }
         }
     </style>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 <canvas id="particleCanvas"></canvas>
@@ -1901,10 +1936,11 @@
             const posterUrl = item.posterSrc || 'https://placehold.co/600x400/152238/white?text=Unreal+Video';
             const mediaHtml = item.type === 'image'
                 ? `<img src="${item.mediaSrc}" alt="${escapeHtml(item.title)}" loading="lazy" onerror="this.src='https://placehold.co/600x400/1a2a44/white?text=UE+Preview'">`
-                : `<video controls preload="metadata" poster="${posterUrl}">
-                        <source src="${item.mediaSrc}" type="video/mp4">
-                        您的浏览器不支持视频标签
-                   </video>`;
+                : `<div class="video-lazy" data-src="${item.mediaSrc}" data-poster="${posterUrl}" data-id="${item.id}">
+                        <img src="${posterUrl}" alt="${escapeHtml(item.title)}" loading="lazy">
+                        <div class="video-play-btn" data-src="${item.mediaSrc}"><span class="play-icon">▶</span></div>
+                        <span class="video-label">🎬 视频</span>
+                   </div>`;
             const catLabel = getCategoryLabel(item.category);
             return `
                 <div class="card card-clickable${item.category ? ' cat-' + item.category : ''}" data-id="${item.id}" draggable="false" style="animation-delay:${idx * 0.06}s">
@@ -1953,6 +1989,21 @@
                 const item = portfolioItems.find(i => i.id === id);
                 if (!item) return;
                 changePosterForItem(item);
+            });
+        });
+
+        // 视频懒加载：点击封面才加载视频
+        document.querySelectorAll('.video-lazy').forEach(videoDiv => {
+            videoDiv.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const src = videoDiv.getAttribute('data-src');
+                const posterUrl = videoDiv.getAttribute('data-poster');
+                videoDiv.innerHTML = `<video controls autoplay poster="${posterUrl}" style="width:100%;height:100%;object-fit:cover;">
+                    <source src="${src}" type="video/mp4">
+                    您的浏览器不支持视频标签
+                </video>`;
+                videoDiv.classList.add('video-loaded');
+                videoDiv.querySelector('video').play().catch(() => {});
             });
         });
 
