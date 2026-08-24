@@ -2579,6 +2579,10 @@
     async function exportPortfolioData() {
         try {
             const exportItems = [];
+            let skippedBlobCount = 0;
+            let exportedBlobCount = 0;
+            let totalBlobSize = 0;
+
             for (const item of portfolioItems) {
                 const exportItem = {
                     id: item.id,
@@ -2594,51 +2598,54 @@
                     isExample: false
                 };
 
-                if (item.localBlob && item._fileBlob) {
-                    const reader = new FileReader();
-                    const base64 = await new Promise((resolve, reject) => {
-                        reader.onload = () => resolve(reader.result);
-                        reader.onerror = reject;
-                        reader.readAsDataURL(item._fileBlob);
-                    });
-                    exportItem.mediaSrc = base64;
-                    exportItem._isBase64 = true;
-                } else if (item.mediaSrc && item.mediaSrc.startsWith('blob:')) {
-                    try {
-                        const resp = await fetch(item.mediaSrc);
-                        const blob = await resp.blob();
-                        const reader = new FileReader();
-                        const base64 = await new Promise((resolve, reject) => {
-                            reader.onload = () => resolve(reader.result);
-                            reader.onerror = reject;
-                            reader.readAsDataURL(blob);
-                        });
-                        exportItem.mediaSrc = base64;
-                        exportItem._isBase64 = true;
-                    } catch {
+                const hasBlob = (item.localBlob && item._fileBlob) ||
+                    (item.mediaSrc && item.mediaSrc.startsWith('blob:'));
+                const blobSize = (item._fileBlob ? item._fileBlob.size : 0) || 0;
+
+                if (hasBlob) {
+                    totalBlobSize += blobSize;
+                    if (totalBlobSize > 10 * 1024 * 1024) {
+                        skippedBlobCount++;
                         exportItem.mediaSrc = '';
+                        exportItem._skippedBlob = true;
+                    } else {
+                        try {
+                            let blob = null;
+                            if (item._fileBlob) {
+                                blob = item._fileBlob;
+                            } else if (item.mediaSrc && item.mediaSrc.startsWith('blob:')) {
+                                const resp = await fetch(item.mediaSrc);
+                                blob = await resp.blob();
+                            }
+                            if (blob) {
+                                const reader = new FileReader();
+                                const base64 = await new Promise((resolve, reject) => {
+                                    reader.onload = () => resolve(reader.result);
+                                    reader.onerror = reject;
+                                    reader.readAsDataURL(blob);
+                                });
+                                exportItem.mediaSrc = base64;
+                                exportItem._isBase64 = true;
+                                exportedBlobCount++;
+                            } else {
+                                exportItem.mediaSrc = '';
+                            }
+                        } catch {
+                            skippedBlobCount++;
+                            exportItem.mediaSrc = '';
+                        }
                     }
                 } else {
                     exportItem.mediaSrc = item.mediaSrc || '';
                 }
 
                 if (item._posterBlob) {
-                    const reader = new FileReader();
-                    const base64 = await new Promise((resolve, reject) => {
-                        reader.onload = () => resolve(reader.result);
-                        reader.onerror = reject;
-                        reader.readAsDataURL(item._posterBlob);
-                    });
-                    exportItem.posterSrc = base64;
-                } else if (item.posterSrc && item.posterSrc.startsWith('blob:')) {
                     try {
-                        const resp = await fetch(item.posterSrc);
-                        const blob = await resp.blob();
                         const reader = new FileReader();
                         const base64 = await new Promise((resolve, reject) => {
                             reader.onload = () => resolve(reader.result);
                             reader.onerror = reject;
-                            reader.readAsDataURL(blob);
+                            reader.readAsDataURL(item._posterBlob);
                         });
                         exportItem.posterSrc = base64;
                     } catch {
@@ -2669,8 +2676,14 @@
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
-            console.log('[exportPortfolioData] 导出成功，共', exportItems.length, '个作品，数据大小:', jsonStr.length, '字节');
-            showToast(`已导出 ${exportItems.length} 个作品数据`, 'success');
+            let msg = `已导出 ${exportItems.length} 个作品`;
+            if (skippedBlobCount > 0) {
+                msg += `（${exportedBlobCount}个含图片/视频，${skippedBlobCount}个因文件过大仅保留文字信息）`;
+            } else {
+                msg += `，含图片/视频`;
+            }
+            console.log('[exportPortfolioData]', msg, '数据大小:', jsonStr.length, '字节');
+            showToast(msg, 'success');
             return exportData;
         } catch (e) {
             console.error('[exportPortfolioData] 导出失败:', e);
