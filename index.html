@@ -1902,6 +1902,178 @@
         return Date.now() + '-' + Math.random().toString(36).substr(2, 8);
     }
 
+    const BATCH_SIZE = 6;
+    let _renderObserver = null;
+
+    function createCardHTML(item, idx) {
+        const posterUrl = item.posterSrc || 'https://placehold.co/600x400/152238/white?text=Unreal+Video';
+        const isVideo = item.type === 'video';
+        const mediaHtml = !isVideo
+            ? `<img src="${item.mediaSrc}" alt="${escapeHtml(item.title)}" loading="lazy" decoding="async" onerror="this.src='https://placehold.co/600x400/1a2a44/white?text=UE+Preview'">`
+            : `<div class="video-lazy" data-src="${item.mediaSrc}" data-poster="${posterUrl}" data-id="${item.id}">
+                    <img src="${posterUrl}" alt="${escapeHtml(item.title)}" loading="lazy" decoding="async">
+                    <div class="video-play-btn" data-src="${item.mediaSrc}"><span class="play-icon">▶</span></div>
+                    <span class="video-label">🎬 点击播放视频</span>
+               </div>`;
+        const catLabel = getCategoryLabel(item.category);
+        return `
+            <div class="card card-clickable${item.category ? ' cat-' + item.category : ''}" data-id="${item.id}" draggable="false" style="animation-delay:${idx * 0.06}s">
+                <div class="media-container">
+                    ${mediaHtml}
+                    <div class="media-edit-overlay" data-id="${item.id}"><span>🖼 更换图片/视频</span></div>
+                    <div class="drag-handle" data-id="${item.id}">⋮⋮</div>
+                </div>
+                <div class="card-content">
+                    <div class="card-title" contenteditable="${isEditMode}" data-field="title" data-id="${item.id}">${escapeHtml(item.title)}</div>
+                    <div class="card-desc" contenteditable="${isEditMode}" data-field="description" data-id="${item.id}">${escapeHtml(item.description)}</div>
+                    <span class="type-tag">${item.type === 'image' ? '📸 截图作品' : '🎬 视频作品'}</span>
+                    ${catLabel ? `<span class="type-tag${item.category ? ' cat-' + item.category + ' tag' : ''}" style="margin-left:4px;">${catLabel}</span>` : ''}
+                    ${item.type === 'video' ? `<button class="change-poster-btn" data-id="${item.id}" style="display:none;background:transparent;border:1px solid #ffb830;color:#ffb830;cursor:pointer;font-size:0.7rem;padding:0.2rem 0.7rem;border-radius:20px;margin-left:6px;transition:0.2s;">🖼 更换封面</button>` : ''}
+                    <div style="margin-top:6px;"><button class="delete-btn" data-id="${item.id}" style="display:${isEditMode ? '' : 'none'};">🗑 删除作品</button></div>
+                </div>
+            </div>
+        `;
+    }
+
+    function bindCardEvents(container) {
+        const root = container || document;
+        root.querySelectorAll('.delete-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = btn.getAttribute('data-id');
+                deleteItemById(id);
+            });
+        });
+        root.querySelectorAll('.media-edit-overlay').forEach(overlay => {
+            overlay.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = overlay.getAttribute('data-id');
+                const item = portfolioItems.find(i => i.id === id);
+                if (!item) return;
+                changeMediaForItem(item);
+            });
+        });
+        root.querySelectorAll('.change-poster-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = btn.getAttribute('data-id');
+                const item = portfolioItems.find(i => i.id === id);
+                if (!item) return;
+                changePosterForItem(item);
+            });
+        });
+        root.querySelectorAll('.video-lazy').forEach(videoDiv => {
+            videoDiv.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const src = videoDiv.getAttribute('data-src');
+                const posterUrl = videoDiv.getAttribute('data-poster');
+                videoDiv.innerHTML = `<video controls autoplay poster="${posterUrl}" style="width:100%;height:100%;object-fit:cover;">
+                    <source src="${src}" type="video/mp4">
+                    您的浏览器不支持视频标签
+                </video>`;
+                videoDiv.classList.add('video-loaded');
+                videoDiv.querySelector('video').play().catch(() => {});
+            });
+        });
+        root.querySelectorAll('.card-clickable').forEach(card => {
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('button') || (isEditMode && e.target.closest('[contenteditable="true"]'))) return;
+                const id = card.getAttribute('data-id');
+                const item = portfolioItems.find(i => i.id === id);
+                if (item) openModal(item);
+            });
+        });
+        root.querySelectorAll('.drag-handle').forEach(handle => {
+            handle.addEventListener('mousedown', (e) => {
+                if (!isEditMode) return;
+                const card = handle.closest('.card');
+                if (!card) return;
+                card.draggable = true;
+            });
+            handle.addEventListener('mouseup', () => {
+                const card = handle.closest('.card');
+                if (card) card.draggable = false;
+            });
+        });
+        root.querySelectorAll('.card').forEach(card => {
+            card.addEventListener('dragstart', handleDragStart);
+            card.addEventListener('dragover', handleDragOver);
+            card.addEventListener('dragleave', handleDragLeave);
+            card.addEventListener('drop', handleDrop);
+            card.addEventListener('dragend', handleDragEnd);
+        });
+    }
+
+    function renderPortfolioChunked(filtered, grid, startIdx, endIdx) {
+        const chunk = filtered.slice(startIdx, endIdx);
+        const html = chunk.map((item, i) => createCardHTML(item, startIdx + i)).join('');
+        
+        const tempContainer = document.createElement('div');
+        tempContainer.innerHTML = html;
+        
+        const fragment = document.createDocumentFragment();
+        while (tempContainer.firstChild) {
+            fragment.appendChild(tempContainer.firstChild);
+        }
+        grid.appendChild(fragment);
+        
+        bindCardEvents(grid);
+        observeCards();
+        if (isEditMode) setContentEditable(true);
+    }
+
+    function setupScrollSentinel(filtered, grid) {
+        if (_renderObserver) {
+            _renderObserver.disconnect();
+        }
+
+        let renderedCount = 0;
+        const totalCount = filtered.length;
+
+        if (grid.querySelector('.scroll-sentinel')) {
+            grid.querySelector('.scroll-sentinel').remove();
+        }
+
+        const sentinel = document.createElement('div');
+        sentinel.className = 'scroll-sentinel';
+        sentinel.style.cssText = 'width:100%;height:20px;display:flex;justify-content:center;align-items:center;color:#888;font-size:0.85rem;margin:20px 0;';
+        sentinel.textContent = '加载更多作品...';
+        grid.appendChild(sentinel);
+
+        const loadMore = () => {
+            if (renderedCount >= totalCount) {
+                sentinel.textContent = '✨ 已加载全部作品';
+                sentinel.style.display = 'none';
+                _renderObserver.disconnect();
+                return;
+            }
+
+            sentinel.textContent = '加载中...';
+            const nextEnd = Math.min(renderedCount + BATCH_SIZE, totalCount);
+            
+            requestAnimationFrame(() => {
+                renderPortfolioChunked(filtered, grid, renderedCount, nextEnd);
+                renderedCount = nextEnd;
+                sentinel.textContent = renderedCount < totalCount ? '继续加载更多...' : '✨ 已加载全部作品';
+                if (renderedCount >= totalCount) {
+                    sentinel.style.display = 'none';
+                    _renderObserver.disconnect();
+                }
+            });
+        };
+
+        _renderObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    loadMore();
+                }
+            });
+        }, { root: null, rootMargin: '100px', threshold: 0.1 });
+
+        _renderObserver.observe(sentinel);
+        loadMore();
+    }
+
     function renderPortfolio(filter = 'all', searchTerm = '') {
         _focusedCardIdx = -1;
         const grid = document.getElementById('portfolioGrid');
@@ -1911,7 +2083,6 @@
             ? portfolioItems
             : portfolioItems.filter(item => item.category === filter);
 
-        // 搜索过滤
         const term = searchTerm || (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
         if (term) {
             filtered = filtered.filter(item =>
@@ -1932,122 +2103,8 @@
             return;
         }
 
-        grid.innerHTML = filtered.map((item, idx) => {
-            const posterUrl = item.posterSrc || 'https://placehold.co/600x400/152238/white?text=Unreal+Video';
-            const isVideo = item.type === 'video';
-            const mediaHtml = !isVideo
-                ? `<img src="${item.mediaSrc}" alt="${escapeHtml(item.title)}" loading="lazy" decoding="async" onerror="this.src='https://placehold.co/600x400/1a2a44/white?text=UE+Preview'">`
-                : `<div class="video-lazy" data-src="${item.mediaSrc}" data-poster="${posterUrl}" data-id="${item.id}">
-                        <img src="${posterUrl}" alt="${escapeHtml(item.title)}" loading="lazy" decoding="async">
-                        <div class="video-play-btn" data-src="${item.mediaSrc}"><span class="play-icon">▶</span></div>
-                        <span class="video-label">🎬 点击播放视频</span>
-                   </div>`;
-            const catLabel = getCategoryLabel(item.category);
-            return `
-                <div class="card card-clickable${item.category ? ' cat-' + item.category : ''}" data-id="${item.id}" draggable="false" style="animation-delay:${idx * 0.06}s">
-                    <div class="media-container">
-                        ${mediaHtml}
-                        <div class="media-edit-overlay" data-id="${item.id}"><span>🖼 更换图片/视频</span></div>
-                        <div class="drag-handle" data-id="${item.id}">⋮⋮</div>
-                    </div>
-                    <div class="card-content">
-                        <div class="card-title" contenteditable="false" data-field="title" data-id="${item.id}">${escapeHtml(item.title)}</div>
-                        <div class="card-desc" contenteditable="false" data-field="description" data-id="${item.id}">${escapeHtml(item.description)}</div>
-                        <span class="type-tag">${item.type === 'image' ? '📸 截图作品' : '🎬 视频作品'}</span>
-                        ${catLabel ? `<span class="type-tag${item.category ? ' cat-' + item.category + ' tag' : ''}" style="margin-left:4px;">${catLabel}</span>` : ''}
-                        ${item.type === 'video' ? `<button class="change-poster-btn" data-id="${item.id}" style="display:none;background:transparent;border:1px solid #ffb830;color:#ffb830;cursor:pointer;font-size:0.7rem;padding:0.2rem 0.7rem;border-radius:20px;margin-left:6px;transition:0.2s;">🖼 更换封面</button>` : ''}
-                        ${isEditMode ? `<div><button class="delete-btn" data-id="${item.id}">🗑 删除作品</button></div>` : ''}
-                    </div>
-                </div>
-            `;
-        }).join('');
-
-        // 删除按钮事件
-        document.querySelectorAll('.delete-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const id = btn.getAttribute('data-id');
-                deleteItemById(id);
-            });
-        });
-
-        // 媒体更换事件
-        document.querySelectorAll('.media-edit-overlay').forEach(overlay => {
-            overlay.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const id = overlay.getAttribute('data-id');
-                const item = portfolioItems.find(i => i.id === id);
-                if (!item) return;
-                changeMediaForItem(item);
-            });
-        });
-
-        // 视频封面更换事件
-        document.querySelectorAll('.change-poster-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const id = btn.getAttribute('data-id');
-                const item = portfolioItems.find(i => i.id === id);
-                if (!item) return;
-                changePosterForItem(item);
-            });
-        });
-
-        // 视频懒加载：点击封面才加载视频
-        document.querySelectorAll('.video-lazy').forEach(videoDiv => {
-            videoDiv.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const src = videoDiv.getAttribute('data-src');
-                const posterUrl = videoDiv.getAttribute('data-poster');
-                videoDiv.innerHTML = `<video controls autoplay poster="${posterUrl}" style="width:100%;height:100%;object-fit:cover;">
-                    <source src="${src}" type="video/mp4">
-                    您的浏览器不支持视频标签
-                </video>`;
-                videoDiv.classList.add('video-loaded');
-                videoDiv.querySelector('video').play().catch(() => {});
-            });
-        });
-
-        // 卡片点击 → 模态框
-        document.querySelectorAll('.card-clickable').forEach(card => {
-            card.addEventListener('click', (e) => {
-                // 避免点击按钮或编辑区域时打开模态框
-                if (e.target.closest('button') || (isEditMode && e.target.closest('[contenteditable="true"]'))) return;
-                const id = card.getAttribute('data-id');
-                const item = portfolioItems.find(i => i.id === id);
-                if (item) openModal(item);
-            });
-        });
-
-        // 拖拽事件
-        document.querySelectorAll('.drag-handle').forEach(handle => {
-            handle.addEventListener('mousedown', (e) => {
-                if (!isEditMode) return;
-                const card = handle.closest('.card');
-                if (!card) return;
-                card.draggable = true;
-            });
-            handle.addEventListener('mouseup', () => {
-                const card = handle.closest('.card');
-                if (card) card.draggable = false;
-            });
-        });
-
-        document.querySelectorAll('.card').forEach(card => {
-            card.addEventListener('dragstart', handleDragStart);
-            card.addEventListener('dragover', handleDragOver);
-            card.addEventListener('dragleave', handleDragLeave);
-            card.addEventListener('drop', handleDrop);
-            card.addEventListener('dragend', handleDragEnd);
-        });
-
-        // 编辑模式下重置 draggable
-        if (isEditMode) {
-            setContentEditable(true);
-        }
-
-        // 滚动入场观察
-        observeCards();
+        grid.innerHTML = '';
+        setupScrollSentinel(filtered, grid);
     }
 
     let cardObserver = null;
