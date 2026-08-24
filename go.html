@@ -3,9 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-    <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
     <title>UE开发者作品集</title>
     <style>
         body { background:#0a0a1a; color:#fff; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; }
@@ -14,7 +11,18 @@
 <body>
     <p>加载中…</p>
     <script>
-        location.replace('index.html?t=' + Date.now());
+        // 用 fetch + no-store 强制绕过微信缓存
+        fetch('index.html?t=' + Date.now(), { cache: 'no-store' })
+            .then(r => r.text())
+            .then(html => {
+                document.open();
+                document.write(html);
+                document.close();
+            })
+            .catch(() => {
+                // 降级方案：直接跳转
+                location.replace('index.html?t=' + Date.now());
+            });
     </script>
 </body>
 </html>
