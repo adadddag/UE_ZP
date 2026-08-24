@@ -16,7 +16,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" defer></script>
     <script>
         // 配置PDF.js worker
-        if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
     <!-- OCR库 -->
@@ -1905,6 +1905,121 @@
     const BATCH_SIZE = 6;
     let _renderObserver = null;
 
+    // ===== 调试日志系统 =====
+    const PERF_LOG = {
+        enabled: true,
+        logs: [],
+        startTime: performance.now(),
+        
+        log(category, action, details = {}) {
+            if (!this.enabled) return;
+            const entry = {
+                time: new Date().toISOString(),
+                elapsed: Math.round(performance.now() - this.startTime),
+                category,
+                action,
+                details,
+                domNodes: document.querySelectorAll('.card').length,
+                memory: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) + 'MB' : 'N/A'
+            };
+            this.logs.push(entry);
+            const prefix = `[PERF][${category}][${action}][+${entry.elapsed}ms]`;
+            console.log(prefix, JSON.stringify(details));
+            return entry;
+        },
+        
+        time(label) {
+            if (!this.enabled) return;
+            this.log('TIMER', 'START', { label });
+            return { label, start: performance.now() };
+        },
+        
+        end(timer, extra = {}) {
+            if (!this.enabled) return;
+            const duration = Math.round(performance.now() - timer.start);
+            this.log('TIMER', 'END', { label: timer.label, duration_ms: duration, ...extra });
+            return duration;
+        },
+        
+        summary() {
+            if (!this.enabled) return;
+            console.group('📊 性能日志汇总');
+            console.log('总日志数:', this.logs.length);
+            console.log('当前DOM卡片数:', document.querySelectorAll('.card').length);
+            console.log('当前滚动位置:', window.scrollY + 'px');
+            console.log('视口高度:', window.innerHeight + 'px');
+            
+            // 按类别统计
+            const categories = {};
+            this.logs.forEach(log => {
+                if (!categories[log.category]) categories[log.category] = [];
+                categories[log.category].push(log);
+            });
+            
+            Object.entries(categories).forEach(([cat, entries]) => {
+                console.group(`📁 ${cat} (${entries.length} 条)`);
+                entries.forEach(e => {
+                    console.log(`  [${e.action}] +${e.elapsed}ms`, e.details);
+                });
+                console.groupEnd();
+            });
+            
+            console.log('使用方法: 输入 PERF_LOG.printLogs() 查看完整日志');
+            console.log('清空日志: 输入 PERF_LOG.clearLogs()');
+            console.log('导出日志: 输入 PERF_LOG.exportLogs()');
+            console.groupEnd();
+        },
+        
+        printLogs() {
+            if (!this.enabled) return;
+            console.table(this.logs.map(l => ({
+                time: l.time.substring(11),
+                elapsed_ms: l.elapsed,
+                category: l.category,
+                action: l.action,
+                details: JSON.stringify(l.details).substring(0, 80),
+                dom_cards: l.domNodes
+            })));
+        },
+        
+        clearLogs() {
+            this.logs = [];
+            this.startTime = performance.now();
+            console.log('日志已清空');
+        },
+        
+        exportLogs() {
+            const data = JSON.stringify(this.logs, null, 2);
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `perf-logs-${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            console.log('日志已导出');
+        },
+        
+        getStats() {
+            const renderTimes = this.logs.filter(l => l.category === 'RENDER' && l.action === 'CHUNK_COMPLETE');
+            const videoTimes = this.logs.filter(l => l.category === 'VIDEO' && l.action === 'PLAY_START');
+            const scrollEvents = this.logs.filter(l => l.category === 'SCROLL' && l.action === 'SENTINEL_TRIGGERED');
+            
+            return {
+                total_render_chunks: renderTimes.length,
+                avg_render_time: renderTimes.length ? Math.round(renderTimes.reduce((s, l) => s + (l.details.duration_ms || 0), 0) / renderTimes.length) + 'ms' : 'N/A',
+                total_video_plays: videoTimes.length,
+                avg_video_start: videoTimes.length ? Math.round(videoTimes.reduce((s, l) => s + (l.details.load_time_ms || 0), 0) / videoTimes.length) + 'ms' : 'N/A',
+                total_scroll_triggers: scrollEvents.length,
+                current_dom_cards: document.querySelectorAll('.card').length,
+                total_logs: this.logs.length
+            };
+        }
+    };
+
+    // 暴露到全局方便调试
+    window.PERF_LOG = PERF_LOG;
+
     function createCardHTML(item, idx) {
         const posterUrl = item.posterSrc || 'https://placehold.co/600x400/152238/white?text=Unreal+Video';
         const isVideo = item.type === 'video';
@@ -1965,14 +2080,85 @@
         root.querySelectorAll('.video-lazy').forEach(videoDiv => {
             videoDiv.addEventListener('click', (e) => {
                 e.stopPropagation();
+                const itemId = videoDiv.getAttribute('data-id');
                 const src = videoDiv.getAttribute('data-src');
                 const posterUrl = videoDiv.getAttribute('data-poster');
+                
+                const videoTimer = PERF_LOG.time('VIDEO_LAZY_LOAD');
+                PERF_LOG.log('VIDEO', 'CLICK', { 
+                    item_id: itemId, 
+                    src: src.split('/').pop(),
+                    has_poster: !!posterUrl,
+                    current_dom_cards: document.querySelectorAll('.card').length
+                });
+                
+                // 创建 video 元素
                 videoDiv.innerHTML = `<video controls autoplay poster="${posterUrl}" style="width:100%;height:100%;object-fit:cover;">
                     <source src="${src}" type="video/mp4">
                     您的浏览器不支持视频标签
                 </video>`;
                 videoDiv.classList.add('video-loaded');
-                videoDiv.querySelector('video').play().catch(() => {});
+                
+                const videoEl = videoDiv.querySelector('video');
+                
+                // 监听视频加载进度
+                videoEl.addEventListener('loadedmetadata', () => {
+                    PERF_LOG.log('VIDEO', 'METADATA_LOADED', { 
+                        item_id: itemId,
+                        duration: Math.round(videoEl.duration) + 's',
+                        video_width: videoEl.videoWidth,
+                        video_height: videoEl.videoHeight,
+                        ready_state: videoEl.readyState
+                    });
+                });
+                
+                videoEl.addEventListener('canplay', () => {
+                    const duration = PERF_LOG.end(videoTimer, { item_id: itemId });
+                    PERF_LOG.log('VIDEO', 'CAN_PLAY', { 
+                        item_id: itemId,
+                        load_time_ms: duration,
+                        ready_state: videoEl.readyState
+                    });
+                });
+                
+                videoEl.addEventListener('waiting', () => {
+                    PERF_LOG.log('VIDEO', 'BUFFERING', { 
+                        item_id: itemId,
+                        current_time: Math.round(videoEl.currentTime) + 's',
+                        ready_state: videoEl.readyState
+                    });
+                });
+                
+                videoEl.addEventListener('playing', () => {
+                    PERF_LOG.log('VIDEO', 'PLAYING', { 
+                        item_id: itemId,
+                        current_time: Math.round(videoEl.currentTime) + 's'
+                    });
+                });
+                
+                videoEl.addEventListener('error', (err) => {
+                    PERF_LOG.log('VIDEO', 'ERROR', { 
+                        item_id: itemId,
+                        error_code: videoEl.error?.code,
+                        error_message: videoEl.error?.message,
+                        src: src
+                    });
+                    console.error('视频加载失败:', videoEl.error);
+                });
+                
+                // 自动播放
+                videoEl.play().catch(err => {
+                    PERF_LOG.log('VIDEO', 'PLAY_ERROR', { 
+                        item_id: itemId,
+                        error: err.message
+                    });
+                    console.warn('自动播放失败，用户需要手动点击:', err.message);
+                });
+                
+                PERF_LOG.log('VIDEO', 'ELEMENT_CREATED', { 
+                    item_id: itemId,
+                    ready_state: videoEl.readyState
+                });
             });
         });
         root.querySelectorAll('.card-clickable').forEach(card => {
@@ -2005,6 +2191,15 @@
     }
 
     function renderPortfolioChunked(filtered, grid, startIdx, endIdx) {
+        const chunkSize = endIdx - startIdx;
+        PERF_LOG.log('RENDER', 'CHUNK_START', { 
+            range: `${startIdx}-${endIdx}`, 
+            chunk_size: chunkSize,
+            total_filtered: filtered.length,
+            current_dom_cards: document.querySelectorAll('.card').length
+        });
+        
+        const renderTimer = PERF_LOG.time('CHUNK_RENDER');
         const chunk = filtered.slice(startIdx, endIdx);
         const html = chunk.map((item, i) => createCardHTML(item, startIdx + i)).join('');
         
@@ -2015,16 +2210,42 @@
         while (tempContainer.firstChild) {
             fragment.appendChild(tempContainer.firstChild);
         }
+        
+        const appendStart = performance.now();
         grid.appendChild(fragment);
+        const appendTime = Math.round(performance.now() - appendStart);
         
         bindCardEvents(grid);
         observeCards();
         if (isEditMode) setContentEditable(true);
+        
+        const totalDuration = PERF_LOG.end(renderTimer, { 
+            range: `${startIdx}-${endIdx}`,
+            chunk_size: chunkSize,
+            dom_append_time_ms: appendTime
+        });
+        
+        PERF_LOG.log('RENDER', 'CHUNK_COMPLETE', { 
+            range: `${startIdx}-${endIdx}`,
+            chunk_size: chunkSize,
+            duration_ms: totalDuration,
+            dom_append_time_ms: appendTime,
+            final_dom_cards: document.querySelectorAll('.card').length
+        });
+        
+        return totalDuration;
     }
 
     function setupScrollSentinel(filtered, grid) {
+        PERF_LOG.log('SCROLL', 'SETUP', { 
+            total_items: filtered.length,
+            batch_size: BATCH_SIZE,
+            initial_render: Math.min(BATCH_SIZE, filtered.length)
+        });
+        
         if (_renderObserver) {
             _renderObserver.disconnect();
+            PERF_LOG.log('SCROLL', 'PREVIOUS_OBSERVER_DISCONNECTED');
         }
 
         let renderedCount = 0;
@@ -2039,25 +2260,68 @@
         sentinel.style.cssText = 'width:100%;height:20px;display:flex;justify-content:center;align-items:center;color:#888;font-size:0.85rem;margin:20px 0;';
         sentinel.textContent = '加载更多作品...';
         grid.appendChild(sentinel);
+        
+        PERF_LOG.log('SCROLL', 'SENTINEL_CREATED', { 
+            sentinel_height: sentinel.offsetHeight,
+            sentinel_position: sentinel.getBoundingClientRect().top + 'px'
+        });
 
+        let loadCount = 0;
         const loadMore = () => {
+            loadCount++;
+            PERF_LOG.log('SCROLL', 'LOAD_MORE_CALLED', { 
+                call_count: loadCount,
+                rendered_before: renderedCount,
+                total_count: totalCount,
+                scroll_y: window.scrollY + 'px',
+                viewport_height: window.innerHeight + 'px'
+            });
+            
             if (renderedCount >= totalCount) {
+                PERF_LOG.log('SCROLL', 'ALL_LOADED', { 
+                    total_rendered: renderedCount,
+                    total_items: totalCount
+                });
                 sentinel.textContent = '✨ 已加载全部作品';
                 sentinel.style.display = 'none';
                 _renderObserver.disconnect();
+                PERF_LOG.log('SCROLL', 'OBSERVER_DISCONNECTED_ALL_LOADED');
                 return;
             }
 
             sentinel.textContent = '加载中...';
             const nextEnd = Math.min(renderedCount + BATCH_SIZE, totalCount);
             
+            PERF_LOG.log('SCROLL', 'REQUEST_ANIMATION_FRAME', { 
+                loading: `${renderedCount}-${nextEnd}`,
+                remaining: totalCount - nextEnd
+            });
+            
             requestAnimationFrame(() => {
-                renderPortfolioChunked(filtered, grid, renderedCount, nextEnd);
+                PERF_LOG.log('SCROLL', 'RAF_EXECUTED', { 
+                    loading: `${renderedCount}-${nextEnd}`,
+                    scroll_y: window.scrollY + 'px'
+                });
+                
+                const renderDuration = renderPortfolioChunked(filtered, grid, renderedCount, nextEnd);
                 renderedCount = nextEnd;
+                
+                PERF_LOG.log('SCROLL', 'CHUNK_RENDERED', { 
+                    range: `${renderedCount}-${nextEnd}`,
+                    render_duration_ms: renderDuration,
+                    total_rendered: renderedCount
+                });
+                
                 sentinel.textContent = renderedCount < totalCount ? '继续加载更多...' : '✨ 已加载全部作品';
+                
                 if (renderedCount >= totalCount) {
                     sentinel.style.display = 'none';
                     _renderObserver.disconnect();
+                    PERF_LOG.log('SCROLL', 'COMPLETE', { 
+                        total_chunks_loaded: loadCount,
+                        total_rendered: renderedCount,
+                        final_dom_cards: document.querySelectorAll('.card').length
+                    });
                 }
             });
         };
@@ -2065,16 +2329,37 @@
         _renderObserver = new IntersectionObserver((entries) => {
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
+                    PERF_LOG.log('SCROLL', 'SENTINEL_TRIGGERED', { 
+                        intersection_ratio: entry.intersectionRatio.toFixed(2),
+                        bounding_top: Math.round(entry.boundingClientRect.top) + 'px',
+                        root_bottom: entry.rootBounds ? entry.rootBounds.bottom + 'px' : 'viewport',
+                        scroll_y: window.scrollY + 'px'
+                    });
                     loadMore();
                 }
             });
         }, { root: null, rootMargin: '100px', threshold: 0.1 });
 
         _renderObserver.observe(sentinel);
+        PERF_LOG.log('SCROLL', 'OBSERVER_STARTED', { 
+            root_margin: '100px',
+            threshold: 0.1
+        });
+        
+        // 初始加载第一批
+        PERF_LOG.log('SCROLL', 'INITIAL_LOAD_START');
         loadMore();
     }
 
     function renderPortfolio(filter = 'all', searchTerm = '') {
+        const renderTimer = PERF_LOG.time('RENDER_PORTFOLIO');
+        PERF_LOG.log('RENDER', 'START', { 
+            filter,
+            has_search_term: !!searchTerm,
+            total_items: portfolioItems.length,
+            current_dom_cards: document.querySelectorAll('.card').length
+        });
+        
         _focusedCardIdx = -1;
         const grid = document.getElementById('portfolioGrid');
         if (!grid) return;
@@ -2092,6 +2377,13 @@
                 (item.role || '').toLowerCase().includes(term)
             );
         }
+        
+        PERF_LOG.log('RENDER', 'FILTER_COMPLETE', { 
+            filter,
+            search_term: term || 'none',
+            filtered_count: filtered.length,
+            total_items: portfolioItems.length
+        });
 
         updateFilterCounts();
 
@@ -2100,10 +2392,16 @@
                 ? '✨ 暂无作品，请通过上方表单上传你的UE项目截图或视频，或点击"重置示例"展示默认作品集。'
                 : (term ? `未找到匹配"${escapeHtml(term)}"的作品` : '该分类下暂无作品');
             grid.innerHTML = `<div class="empty-msg">${msg}</div>`;
+            PERF_LOG.end(renderTimer, { result: 'EMPTY', reason: 'no_items' });
             return;
         }
 
         grid.innerHTML = '';
+        PERF_LOG.end(renderTimer, { result: 'GRID_CLEARED', filtered_count: filtered.length });
+        
+        // 重置已加载统计
+        PERF_LOG.currentTotalToRender = filtered.length;
+        
         setupScrollSentinel(filtered, grid);
     }
 
@@ -2805,12 +3103,33 @@
 
     // ========== 从 JSON 文件加载作品集数据（部署时回退方案） ==========
     async function loadFromJSON() {
+        PERF_LOG.log('DATA_LOAD', 'JSON_FETCH_START', { url: 'portfolio-data.json' });
+        const fetchTimer = PERF_LOG.time('JSON_FETCH');
+        
         try {
             const resp = await fetch('portfolio-data.json', { cache: 'no-cache' });
-            if (!resp.ok) return null;
+            if (!resp.ok) {
+                PERF_LOG.log('DATA_LOAD', 'JSON_FETCH_FAILED', { status: resp.status });
+                return null;
+            }
+            
+            const fetchDuration = PERF_LOG.end(fetchTimer, { status: resp.status });
+            PERF_LOG.log('DATA_LOAD', 'JSON_FETCH_OK', { 
+                status: resp.status,
+                fetch_time_ms: fetchDuration,
+                content_length: resp.headers.get('content-length')
+            });
+            
+            const jsonParseTimer = PERF_LOG.time('JSON_PARSE');
             const data = await resp.json();
-            if (!data || !data.items || data.items.length === 0) return null;
+            PERF_LOG.end(jsonParseTimer, { data_keys: Object.keys(data) });
+            
+            if (!data || !data.items || data.items.length === 0) {
+                PERF_LOG.log('DATA_LOAD', 'JSON_EMPTY', { reason: 'no_items' });
+                return null;
+            }
 
+            const transformTimer = PERF_LOG.time('ITEM_TRANSFORM');
             const items = data.items.map(item => {
                 const restored = { ...item };
                 delete restored._useZipPath;
@@ -2857,10 +3176,32 @@
 
                 return restored;
             });
-
+            
+            const transformDuration = PERF_LOG.end(transformTimer, { items_count: items.length });
+            
+            // 统计媒体类型
+            const typeStats = { image: 0, video: 0, other: 0 };
+            items.forEach(item => {
+                if (item.type === 'image') typeStats.image++;
+                else if (item.type === 'video') typeStats.video++;
+                else typeStats.other++;
+            });
+            
+            PERF_LOG.log('DATA_LOAD', 'JSON_COMPLETE', { 
+                items_count: items.length,
+                transform_time_ms: transformDuration,
+                type_distribution: typeStats,
+                has_media_paths: items.filter(i => i.mediaSrc && i.mediaSrc.startsWith('media/')).length,
+                has_data_uris: items.filter(i => i.mediaSrc && i.mediaSrc.startsWith('data:')).length
+            });
+            
             console.log('[loadFromJSON] 从 portfolio-data.json 加载成功，共', items.length, '个作品');
             return items;
         } catch (e) {
+            PERF_LOG.log('DATA_LOAD', 'JSON_ERROR', { 
+                error: e.message,
+                error_stack: e.stack?.substring(0, 200)
+            });
             console.warn('[loadFromJSON] 加载 portfolio-data.json 失败:', e);
             return null;
         }
