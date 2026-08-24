@@ -613,6 +613,7 @@
             <span contenteditable="false" id="sectionTitle">🧩 精选作品集 · Unreal Projects</span>
             <button class="reset-btn" id="resetExamplesBtn" style="display: none;">✨ 重置示例作品</button>
             <button class="reset-btn" id="clearDataBtn" style="border-color:#ff8a7a;color:#ff8a7a;display: none;">🗑 清空本地数据</button>
+            <button class="reset-btn" id="exportDataBtn" style="border-color:#7affb2;color:#3dff8f;display: none;">📦 导出为静态数据</button>
         </div>
         <div class="filter-bar" id="filterBar">
             <button class="filter-btn active" data-filter="all">全部 <span class="filter-count"></span></button>
@@ -2574,6 +2575,166 @@
         resetToExamples();
     }
 
+    // ========== 导出作品集数据为 JSON ==========
+    async function exportPortfolioData() {
+        try {
+            const exportItems = [];
+            for (const item of portfolioItems) {
+                const exportItem = {
+                    id: item.id,
+                    title: item.title,
+                    description: item.description,
+                    type: item.type,
+                    category: item.category,
+                    techStack: item.techStack || '',
+                    role: item.role || '',
+                    projectUrl: item.projectUrl || '',
+                    githubUrl: item.githubUrl || '',
+                    localBlob: false,
+                    isExample: false
+                };
+
+                if (item.localBlob && item._fileBlob) {
+                    const reader = new FileReader();
+                    const base64 = await new Promise((resolve, reject) => {
+                        reader.onload = () => resolve(reader.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(item._fileBlob);
+                    });
+                    exportItem.mediaSrc = base64;
+                    exportItem._isBase64 = true;
+                } else if (item.mediaSrc && item.mediaSrc.startsWith('blob:')) {
+                    try {
+                        const resp = await fetch(item.mediaSrc);
+                        const blob = await resp.blob();
+                        const reader = new FileReader();
+                        const base64 = await new Promise((resolve, reject) => {
+                            reader.onload = () => resolve(reader.result);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(blob);
+                        });
+                        exportItem.mediaSrc = base64;
+                        exportItem._isBase64 = true;
+                    } catch {
+                        exportItem.mediaSrc = '';
+                    }
+                } else {
+                    exportItem.mediaSrc = item.mediaSrc || '';
+                }
+
+                if (item._posterBlob) {
+                    const reader = new FileReader();
+                    const base64 = await new Promise((resolve, reject) => {
+                        reader.onload = () => resolve(reader.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(item._posterBlob);
+                    });
+                    exportItem.posterSrc = base64;
+                } else if (item.posterSrc && item.posterSrc.startsWith('blob:')) {
+                    try {
+                        const resp = await fetch(item.posterSrc);
+                        const blob = await resp.blob();
+                        const reader = new FileReader();
+                        const base64 = await new Promise((resolve, reject) => {
+                            reader.onload = () => resolve(reader.result);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(blob);
+                        });
+                        exportItem.posterSrc = base64;
+                    } catch {
+                        exportItem.posterSrc = '';
+                    }
+                } else if (item.posterSrc) {
+                    exportItem.posterSrc = item.posterSrc;
+                }
+
+                exportItems.push(exportItem);
+            }
+
+            const exportData = {
+                version: 1,
+                exportedAt: new Date().toISOString(),
+                items: exportItems,
+                staticConfig: staticConfig || null
+            };
+
+            const jsonStr = JSON.stringify(exportData, null, 2);
+            const blob = new Blob([jsonStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'portfolio-data.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            console.log('[exportPortfolioData] 导出成功，共', exportItems.length, '个作品，数据大小:', jsonStr.length, '字节');
+            showToast(`已导出 ${exportItems.length} 个作品数据`, 'success');
+            return exportData;
+        } catch (e) {
+            console.error('[exportPortfolioData] 导出失败:', e);
+            showToast('导出失败: ' + e.message, 'error');
+            return null;
+        }
+    }
+
+    // ========== 从 JSON 文件加载作品集数据（部署时回退方案） ==========
+    async function loadFromJSON() {
+        try {
+            const resp = await fetch('portfolio-data.json', { cache: 'no-cache' });
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            if (!data || !data.items || data.items.length === 0) return null;
+
+            const items = data.items.map(item => {
+                const restored = { ...item };
+                if (restored._isBase64 && restored.mediaSrc && restored.mediaSrc.startsWith('data:')) {
+                    try {
+                        const byteChars = atob(restored.mediaSrc.split(',')[1]);
+                        const byteNumbers = new Array(byteChars.length);
+                        for (let i = 0; i < byteChars.length; i++) {
+                            byteNumbers[i] = byteChars.charCodeAt(i);
+                        }
+                        const byteArray = new Uint8Array(byteNumbers);
+                        const mimeType = restored.mediaSrc.split(';')[0].split(':')[1];
+                        const blob = new Blob([byteArray], { type: mimeType });
+                        const blobUrl = URL.createObjectURL(blob);
+                        restored.mediaSrc = blobUrl;
+                        restored.localBlob = true;
+                        restored._fileBlob = blob;
+                    } catch {
+                        restored.localBlob = false;
+                    }
+                    delete restored._isBase64;
+                } else {
+                    restored.localBlob = false;
+                }
+                if (restored.posterSrc && restored.posterSrc.startsWith('data:')) {
+                    try {
+                        const byteChars = atob(restored.posterSrc.split(',')[1]);
+                        const byteNumbers = new Array(byteChars.length);
+                        for (let i = 0; i < byteChars.length; i++) {
+                            byteNumbers[i] = byteChars.charCodeAt(i);
+                        }
+                        const byteArray = new Uint8Array(byteNumbers);
+                        const mimeType = restored.posterSrc.split(';')[0].split(':')[1];
+                        const blob = new Blob([byteArray], { type: mimeType });
+                        restored.posterSrc = URL.createObjectURL(blob);
+                        restored._posterBlob = blob;
+                    } catch {}
+                }
+                return restored;
+            });
+
+            console.log('[loadFromJSON] 从 portfolio-data.json 加载成功，共', items.length, '个作品');
+            return items;
+        } catch (e) {
+            console.warn('[loadFromJSON] 加载 portfolio-data.json 失败:', e);
+            return null;
+        }
+    }
+
     let selectedFile = null;
     const fileInput = document.getElementById('mediaFile');
     const chooseBtn = document.getElementById('chooseFileBtn');
@@ -2670,6 +2831,20 @@
             }
         });
     }
+
+    const exportDataBtn = document.getElementById('exportDataBtn');
+    if (exportDataBtn) {
+        exportDataBtn.addEventListener('click', () => {
+            if (portfolioItems.length === 0) {
+                showToast('当前没有作品可导出', 'error');
+                return;
+            }
+            exportPortfolioData();
+        });
+    }
+
+    window.__exportPortfolioData = exportPortfolioData;
+    window.__loadFromJSON = loadFromJSON;
 
     window.addEventListener('beforeunload', () => {
         portfolioItems.forEach(item => {
@@ -4475,7 +4650,13 @@
         applyStaticConfig(staticConfig);
         
         // 加载作品数据
-        const saved = await loadFromDB();
+        let saved = await loadFromDB();
+        if (!saved || saved.length === 0) {
+            saved = await loadFromJSON();
+            if (saved && saved.length > 0) {
+                console.log('[init] 从 portfolio-data.json 加载了', saved.length, '个作品');
+            }
+        }
         if (saved && saved.length > 0) {
             portfolioItems = saved;
             renderPortfolio();
@@ -4796,6 +4977,9 @@
         
         const clearDataBtn = document.getElementById('clearDataBtn');
         if (clearDataBtn) clearDataBtn.style.display = show ? '' : 'none';
+        
+        const exportDataBtn = document.getElementById('exportDataBtn');
+        if (exportDataBtn) exportDataBtn.style.display = show ? '' : 'none';
     }
 
     function syncCardEdits() {
